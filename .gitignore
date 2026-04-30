@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+credentials/
+
+# ADK session storage
+.adk/
+
+# Node
+node_modules/
+
+# Playwright generated artifacts
+web/.features-gen/
+web/playwright-report/
+web/test-results/
+
+.claude
