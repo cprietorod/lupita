@@ -1,6 +1,6 @@
 # Luppita
 
-Agente de IA para la gestión de apartamentos en arriendo en Colombia. Construido con Python y Google ADK (Agent Development Kit), con Google Sheets como base de datos.
+Agente de IA para la gestión de apartamentos arrendados en Colombia. Construido con Python, [Google ADK](https://google.github.io/adk-docs/) y Gemini 2.5 Flash, con Google Sheets como base de datos y un frontend React con componentes visuales adaptativos (A2UI).
 
 Luppita responde preguntas en lenguaje natural como:
 - "¿Qué arrendatarios no han pagado este mes?"
@@ -10,170 +10,189 @@ Luppita responde preguntas en lenguaje natural como:
 
 ---
 
+## Arquitectura
+
+```
+┌─────────────────────┐     HTTP/SSE      ┌──────────────────────┐
+│   Frontend React    │ ────────────────► │  FastAPI + ADK       │
+│   (Vite · port 5173)│                   │  (Python · port 8001)│
+│   A2UI Renderer     │ ◄──────────────── │  Agente Luppita      │
+└─────────────────────┘    JSON + A2UI    └──────────┬───────────┘
+                                                     │ google-api-python-client
+                                                     ▼
+                                          ┌──────────────────────┐
+                                          │   Google Sheets      │
+                                          │   (base de datos)    │
+                                          └──────────────────────┘
+```
+
+El agente usa **A2UI** — un protocolo de UI generativa donde el LLM produce bloques JSON que el frontend convierte en componentes visuales (tarjetas, tablas, snapshots financieros, etc.) en lugar de solo texto.
+
+---
+
 ## Requisitos previos
 
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) instalado
-- Cuenta de Google (para Google Sheets y Google Cloud)
-- API Key de Gemini (Google AI Studio)
+- Node.js 20+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Cuenta de Google Cloud con Vertex AI habilitado
+- Google Sheets con la estructura definida abajo
 
 ---
 
 ## Instalación
 
-### 1. Clonar e instalar dependencias
-
 ```bash
 git clone <url-del-repo>
-cd luppita_claude
-make install
+cd luppita_web
+make install      # instala dependencias Python con uv
+make ui-install   # instala dependencias del frontend
 ```
 
 ---
 
 ## Configuración de Google Sheets
 
-### 2. Crear el Spreadsheet
+### 1. Crear el Spreadsheet
 
-Crea un nuevo Google Spreadsheet y agrégale **6 pestañas** con exactamente estos nombres y encabezados:
+Crea un nuevo Google Spreadsheet con **7 pestañas** con exactamente estos nombres y encabezados:
 
-#### Pestaña `Apartamentos`
+#### `apartamentos`
 ```
 apartamento_id | nombre | direccion | ciudad | area_m2 | estrato | matricula_inmobiliaria | valor_catastral | notas
 ```
 
-#### Pestaña `Contratos`
+#### `contratos`
 ```
-contrato_id | apartamento_id | nombre_arrendatario | cedula | telefono | email | fecha_inicio | fecha_fin | canon_mensual | incremento_anual_pct | dia_pago | deposito | estado | notas
+contrato_id | apartamento_id | inquilino_id | fecha_inicio | fecha_fin | canon_mensual | dia_pago | deposito | estado | notas
 ```
-- Campo `estado`: `activo` / `vencido` / `terminado`
+- `estado`: `VIGENTE` / `TERMINADO` / `CANCELADO`
 
-#### Pestaña `Pagos`
+#### `inquilinos`
+```
+inquilino_id | nombre | cedula | telefono | email | notas
+```
+
+#### `pagos`
 ```
 pago_id | contrato_id | apartamento_id | periodo | fecha_pago | monto_esperado | monto_pagado | diferencia | metodo_pago | comprobante | estado | notas
 ```
-- Campo `estado`: `pagado` / `pendiente` / `parcial` / `mora`
-- Campo `periodo`: formato `YYYY-MM` (ej: `2026-04`)
+- `estado`: `PAGADO` / `PENDIENTE` / `PARCIAL` / `MORA`
+- `periodo`: formato `YYYY-MM` (ej: `2026-04`)
 
-#### Pestaña `Mantenimiento`
+#### `reparaciones`
 ```
-mant_id | apartamento_id | fecha_reporte | fecha_resolucion | categoria | descripcion | proveedor | costo | estado | prioridad | notas
+rep_id | apartamento_id | fecha_reporte | fecha_resolucion | categoria | descripcion | contratista | costo | estado | prioridad | notas
 ```
-- Campo `categoria`: `plomeria` / `electrico` / `pintura` / `estructura` / `electrodomestico` / `otro`
-- Campo `prioridad`: `baja` / `media` / `alta` / `urgente`
-- Campo `estado`: `pendiente` / `en_proceso` / `resuelto`
+- `categoria`: `plomeria` / `electrico` / `pintura` / `estructura` / `electrodomestico` / `otro`
+- `prioridad`: `BAJA` / `MEDIA` / `ALTA`
+- `estado`: `PENDIENTE` / `EN PROGRESO` / `COMPLETADO`
 
-#### Pestaña `Calendario_Tributario`
+#### `impuestos`
 ```
 evento_id | ano_gravable | impuesto | descripcion | fecha_vencimiento | descuento_disponible | aplica_a | estado | monto_pagado | notas
 ```
-- Campo `estado`: `pendiente` / `pagado` / `presentado`
-- Campo `aplica_a`: `todos` o el `apartamento_id` específico
+- `estado`: `PENDIENTE` / `PAGADO` / `PRESENTADO`
+- `aplica_a`: `todos` o el `apartamento_id` específico
 
-#### Pestaña `Config`
+#### `config`
 ```
 clave | valor
 ```
 Agrega estas filas con los valores del año en curso:
 
 | clave | valor |
-|-------|-------|
-| `ipc_2026` | `9.28` |
+|---|---|
+| `ipc_2026` | `5.47` |
 | `uvt_2026` | `49799` |
+| `umbral_alerta_contratos_dias` | `90` |
+| `umbral_mora_alta_dias` | `30` |
 | `ciudad_default` | `Bogota` |
 
-> Actualiza el IPC cada enero con el valor certificado por el DANE.
+> Actualiza `ipc_YYYY` cada enero con el valor certificado por el DANE.
 
-### 3. Poblar el Calendario Tributario
+### 2. Poblar impuestos
 
-Agrega las fechas clave para el año. Ejemplo para 2026 en Bogotá (persona natural):
+Agrega las fechas clave del año. Ejemplo para 2026 en Bogotá:
 
-| evento_id | ano_gravable | impuesto | descripcion | fecha_vencimiento | descuento_disponible | aplica_a | estado |
-|-----------|-------------|----------|-------------|-------------------|----------------------|----------|--------|
-| TAX-2026-001 | 2025 | predial | Predial Bogotá - con descuento | 2026-04-17 | 10% descuento pronto pago | todos | pendiente |
-| TAX-2026-002 | 2025 | predial | Predial Bogotá - fecha límite | 2026-07-10 | Sin descuento | todos | pendiente |
-| TAX-2026-003 | 2025 | renta_natural | Declaración renta personas naturales | 2026-08-12 | N/A | todos | pendiente |
-| TAX-2026-004 | 2025 | retefuente | Retefuente enero 2026 | 2026-02-20 | N/A | todos | pendiente |
-| TAX-2026-005 | 2025 | retefuente | Retefuente febrero 2026 | 2026-03-20 | N/A | todos | pendiente |
-| TAX-2026-006 | 2025 | retefuente | Retefuente marzo 2026 | 2026-04-22 | N/A | todos | pendiente |
-
-> Repite la fila de `retefuente` para cada mes del año ajustando la fecha de vencimiento.
+| evento_id | impuesto | descripcion | fecha_vencimiento | descuento_disponible | estado |
+|---|---|---|---|---|---|
+| TAX-2026-001 | predial | Predial Bogotá - descuento pronto pago | 2026-04-17 | 10% | PENDIENTE |
+| TAX-2026-002 | predial | Predial Bogotá - fecha límite | 2026-07-10 | Sin descuento | PENDIENTE |
+| TAX-2026-003 | renta_natural | Declaración renta personas naturales | 2026-08-12 | N/A | PENDIENTE |
 
 ---
 
-## Configuración de Google Cloud (Service Account)
+## Configuración de Google Cloud
+
+### 3. Habilitar APIs
+
+En [Google Cloud Console](https://console.cloud.google.com/):
+1. Habilita **Vertex AI API**
+2. Habilita **Google Sheets API**
+3. Habilita **Google Drive API**
 
 ### 4. Crear Service Account
 
-1. Ve a [Google Cloud Console](https://console.cloud.google.com/)
-2. Crea un proyecto nuevo o selecciona uno existente
-3. Activa la **Google Sheets API**: *APIs & Services → Library → busca "Google Sheets API" → Habilitar*
-4. Activa la **Google Drive API**: *APIs & Services → Library → busca "Google Drive API" → Habilitar*
-5. Ve a *IAM & Admin → Service Accounts → Crear cuenta de servicio*
-6. Asígnale cualquier nombre (ej: `luppita-sheets`)
-7. En el paso de permisos, no es necesario agregar roles de proyecto
-8. Una vez creada, haz clic en la cuenta → *Claves → Agregar clave → Crear clave nueva → JSON*
-9. Descarga el archivo JSON y guárdalo en:
-
-```
-credentials/service_account.json
+```bash
+make auth GCP_PROJECT=tu-proyecto-id
 ```
 
-> El directorio `credentials/` está en `.gitignore`. Nunca lo subas al repositorio.
+Esto crea la Service Account y descarga la llave en `credentials/luppita-sa.json`.
 
-### 5. Compartir el Spreadsheet con la Service Account
+> Alternativamente, créala manualmente en *IAM & Admin → Service Accounts → Crear → Agregar clave → JSON* y guárdala en `credentials/`.
 
-1. Abre el archivo JSON descargado y copia el valor del campo `client_email`
-   (tiene la forma `luppita-sheets@tu-proyecto.iam.gserviceaccount.com`)
-2. Abre el Google Spreadsheet
-3. Haz clic en **Compartir**
-4. Pega el email de la service account y otórgale permiso de **Editor**
-5. Desactiva la notificación por correo y confirma
+### 5. Compartir el Spreadsheet
+
+Abre el JSON descargado, copia el campo `client_email` y comparte el spreadsheet con ese email con permiso de **Editor**.
 
 ---
 
-## Configuración de variables de entorno
+## Variables de entorno
 
-### 6. Obtener la API Key de Gemini
+```bash
+make env   # crea .env desde .env.example
+```
 
-1. Ve a [Google AI Studio](https://aistudio.google.com/apikey)
-2. Crea una nueva API Key
-3. Copia el valor
+Edita `.env` con tus valores:
 
-### 7. Obtener el ID del Spreadsheet
+```env
+GOOGLE_GENAI_USE_VERTEXAI=1
+GOOGLE_CLOUD_PROJECT=tu-gcp-project-id
+GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=credentials/luppita-sa.json
+SPREADSHEET_ID=tu-spreadsheet-id-aqui
+LUPPITA_OWNER_NAME=Tu Nombre
+```
 
-El ID está en la URL del spreadsheet:
+El ID del spreadsheet está en su URL:
 ```
 https://docs.google.com/spreadsheets/d/ESTE_ES_EL_ID/edit
 ```
 
-### 8. Crear el archivo `.env`
-
-```bash
-make env
-```
-
-Edita `.env` con tus valores reales:
-
-```env
-GOOGLE_API_KEY=AIzaSy...tu_api_key_de_gemini
-SPREADSHEET_ID=tu-spreadsheet-id-aqui
-GOOGLE_SERVICE_ACCOUNT_FILE=credentials/service_account.json
-```
-
 ---
 
-## Ejecutar Luppita
+## Ejecutar en desarrollo
 
-### Interfaz web (recomendado)
+Levanta el backend y el frontend en terminales separadas:
 
 ```bash
-make web
+# Terminal 1 — API backend
+make server
+
+# Terminal 2 — Frontend React
+make ui
 ```
 
-Abre el navegador en `http://localhost:8000`, selecciona el agente `luppita` y empieza a chatear.
+Abre `http://localhost:5173` en el navegador.
 
-### Interfaz de línea de comandos
+### Modo web ADK (alternativo)
+
+```bash
+make web   # localhost:8000, interfaz ADK nativa
+```
+
+### Modo CLI
 
 ```bash
 make cli
@@ -184,47 +203,28 @@ make cli
 ## Comandos Make
 
 | Comando | Descripción |
-|---------|-------------|
-| `make install` | Instala dependencias con uv |
-| `make web` | Lanza Luppita en interfaz web (`localhost:8000`) |
-| `make cli` | Lanza Luppita en línea de comandos |
+|---|---|
+| `make install` | Instala dependencias Python con uv |
+| `make ui-install` | Instala dependencias del frontend |
+| `make server` | Backend ADK + FastAPI (`localhost:8001`) |
+| `make ui` | Frontend React (`localhost:5173`) |
+| `make web` | Interfaz web ADK (`localhost:8000`) |
+| `make cli` | Luppita en línea de comandos |
+| `make test` | Tests unitarios con pytest |
+| `make test-ui` | Tests de UI con Playwright + Gherkin |
+| `make lint` | Verifica código con ruff |
+| `make format` | Formatea código con ruff |
+| `make check` | Verifica conexión al agente y a Sheets |
 | `make env` | Crea `.env` desde `.env.example` |
-| `make lint` | Verifica el código con ruff |
-| `make format` | Formatea el código con ruff |
-| `make test` | Corre los tests con pytest |
-| `make check` | Verifica que las herramientas y Sheets cargan |
+| `make auth GCP_PROJECT=...` | Crea Service Account y descarga llave |
+| `make ui-prod VITE_API_URL=...` | Frontend apuntando a backend en producción |
 
 ---
 
-## Estructura del proyecto
-
-```
-luppita_claude/
-├── pyproject.toml              # Dependencias (uv)
-├── .env                        # Secrets (no se sube al repo)
-├── .env.example                # Plantilla de variables de entorno
-├── .gitignore
-├── luppita/
-│   ├── __init__.py             # Expone root_agent para ADK
-│   ├── agent.py                # Definición del agente y prompt
-│   ├── config.py               # Cliente gspread y variables de entorno
-│   ├── sheets.py               # Primitivas de lectura/escritura en Sheets
-│   └── tools/
-│       ├── contracts.py        # Gestión de contratos (6 herramientas)
-│       ├── payments.py         # Pagos de arriendo (6 herramientas)
-│       ├── maintenance.py      # Mantenimiento (4 herramientas)
-│       ├── taxes.py            # Calendario tributario (4 herramientas)
-│       └── alerts.py           # Dashboard y alertas (2 herramientas)
-└── credentials/
-    └── service_account.json    # Service account de GCP (no se sube al repo)
-```
-
----
-
-## Herramientas disponibles
+## Herramientas del agente
 
 | Dominio | Herramienta | Descripción |
-|---------|-------------|-------------|
+|---|---|---|
 | Contratos | `get_all_contracts` | Lista contratos por estado |
 | Contratos | `get_expiring_contracts` | Contratos que vencen en N días |
 | Contratos | `get_contract_by_apartment` | Contrato activo de un apartamento |
@@ -250,19 +250,116 @@ luppita_claude/
 
 ---
 
-## Verificar la instalación
+## A2UI — Componentes visuales
+
+Cuando el agente detecta que la respuesta se beneficia de una visualización, emite componentes A2UI en lugar de solo texto. El frontend los renderiza automáticamente.
+
+| Componente | Uso |
+|---|---|
+| `AlertCard` | Notificaciones críticas con semáforo (CRITICO / ALERTA / OK) |
+| `FinancialSnapshot` | Resumen financiero mensual con métricas destacadas |
+| `LeaseCard` | Estado de contrato con barra de progreso |
+| `MaintenanceCard` | Ticket de mantenimiento con diagnóstico IA |
+| `TaxEstimate` | Estimación tributaria con estado de cumplimiento |
+| `Card` | Tarjeta genérica con semáforo de estado |
+| `Table` | Tabla de datos |
+| `List` | Lista de ítems |
+| `Heading` | Encabezado de sección |
+
+---
+
+## Estructura del proyecto
+
+```
+luppita_web/
+├── Makefile
+├── Dockerfile                     # Imagen backend (Cloud Run)
+├── pyproject.toml                 # Dependencias Python (uv)
+├── .env.example                   # Plantilla de variables de entorno
+├── .gitignore
+│
+├── luppita/                       # Agente principal
+│   ├── agent.py                   # Definición del agente y prompt
+│   ├── sheets.py                  # Lectura/escritura en Google Sheets
+│   ├── ui_schema.py               # Prompt de A2UI para el agente
+│   ├── fast_api_app.py            # App FastAPI (modo prod/Cloud Run)
+│   ├── app_utils/
+│   │   ├── telemetry.py           # OpenTelemetry + Cloud Trace
+│   │   └── typing.py              # Tipos Pydantic compartidos
+│   └── tools/
+│       ├── contracts.py           # Herramientas de contratos
+│       ├── payments.py            # Herramientas de pagos
+│       ├── maintenance.py         # Herramientas de mantenimiento
+│       ├── taxes.py               # Herramientas tributarias
+│       └── alerts.py              # Dashboard y alertas
+│
+├── web/                           # Frontend React
+│   ├── Dockerfile                 # Imagen frontend (nginx, Cloud Run)
+│   ├── src/
+│   │   ├── App.jsx                # Aplicación principal + chat
+│   │   ├── A2UIRenderer.jsx       # Renderer de componentes A2UI
+│   │   ├── App.css                # Estilos (tema Obsidian Concierge)
+│   │   └── index.css              # Variables CSS y reset
+│   ├── tests-ui/
+│   │   ├── features/              # Escenarios Gherkin (.feature)
+│   │   └── steps/                 # Step definitions (Playwright)
+│   └── playwright.config.js
+│
+├── tests/                         # Tests Python
+│   ├── unit/
+│   ├── integration/
+│   └── eval/                      # Evaluaciones ADK
+│
+├── conductor/                     # Guías del proyecto
+│   ├── product.md
+│   ├── tech-stack.md
+│   ├── workflow.md
+│   └── code_styleguides/
+│
+└── credentials/                   # Excluido de git
+    └── luppita-sa.json
+```
+
+---
+
+## Despliegue en Cloud Run
+
+El proyecto incluye Dockerfiles para el backend y el frontend, listos para desplegar en Google Cloud Run.
 
 ```bash
-make check
+# Build y push del backend
+gcloud builds submit --tag gcr.io/TU_PROYECTO/luppita-api
+
+# Build y push del frontend
+cd web
+gcloud builds submit --tag gcr.io/TU_PROYECTO/luppita-web \
+  --build-arg VITE_API_URL=https://tu-api-url.run.app
 ```
+
+Las variables de entorno sensibles (`SPREADSHEET_ID`, `LUPPITA_OWNER_NAME`) se configuran como secrets en Cloud Run — nunca en el Dockerfile ni en el código.
+
+---
+
+## Marco legal incluido
+
+El agente tiene integrado conocimiento de la **Ley 820 de 2003** (arrendamiento residencial en Colombia):
+- Responsabilidad de reparaciones (propietario vs. inquilino)
+- Límites de depósito (máximo 2 cánones)
+- Incremento de canon (máximo IPC del año anterior, una vez por año)
+- Preaviso de terminación (3 meses)
+
+Y del **Calendario Tributario colombiano**:
+- Predial (Bogotá y Medellín)
+- Renta personas naturales (DIAN)
+- Retención en la fuente sobre arriendos (3.5% si el arrendatario es persona jurídica)
 
 ---
 
 ## Actualización anual
 
-Cada enero actualiza los siguientes valores en la pestaña `Config` del spreadsheet:
+Cada enero actualiza en la pestaña `config` del spreadsheet:
 
-- `ipc_YYYY` — IPC certificado por el DANE (usado para calcular incrementos de canon)
+- `ipc_YYYY` — IPC certificado por el DANE
 - `uvt_YYYY` — Valor de la UVT publicado por la DIAN
 
-Y agrega los nuevos eventos en la pestaña `Calendario_Tributario` con las fechas del nuevo año tributario.
+Y agrega las nuevas filas de impuestos en la pestaña `impuestos` con las fechas del año tributario entrante.
